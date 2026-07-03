@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  docker-smoke-test:
+    name: Docker Compose smoke test
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and start services
+        run: docker compose up -d --build
+
+      - name: Wait for API to become healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/health; then
+              echo ""
+              echo "API is healthy"
+              exit 0
+            fi
+            echo "Waiting for API... (attempt $i/30)"
+            sleep 10
+          done
+          echo "API did not become healthy within the timeout window"
+          exit 1
+
+      - name: Confirm no champion loaded yet
+        run: |
+          curl -sf http://localhost:8000/health | tee /dev/stderr | grep -q '"champion_loaded":false'
+
+      - name: Train, promote, reload, predict
+        run: |
+          curl -sf -X POST http://localhost:8000/train \
+            -H "Content-Type: application/json" -d '{}'
+          echo ""
+
+          curl -sf -X POST http://localhost:8000/promote | tee /dev/stderr | grep -q '"promoted":true'
+          echo ""
+
+          curl -sf -X POST http://localhost:8000/reload
+          echo ""
+
+          curl -sf -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"text": "NASA launched a new spacecraft into orbit today"}' \
+            | tee /dev/stderr | grep -q '"category"'
+
+      - name: Confirm champion now loaded
+        run: |
+          curl -sf http://localhost:8000/health | tee /dev/stderr | grep -q '"champion_loaded":true'
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
