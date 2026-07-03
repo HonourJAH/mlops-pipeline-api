@@ -1,0 +1,43 @@
+services:
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlflow-data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000').read()\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 130s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # Service name, not localhost — containers reach each other by
+      # Compose service name on the shared network, never 127.0.0.1.
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    volumes:
+      # Persists the downloaded 20-newsgroups dataset across container
+      # restarts so /train doesn't re-download ~18MB every time.
+      - sklearn-data:/home/appuser/scikit_learn_data
+      # MLflow's local-filesystem artifact store requires clients to
+      # write artifact files (models, target_names.json) directly to
+      # the same path the tracking server uses — metrics/params go
+      # over REST, but artifacts do not. Same volume, same path as
+      # the mlflow service below.
+      - mlflow-data:/mlflow-data
+
+volumes:
+  mlflow-data:
+  sklearn-data:
